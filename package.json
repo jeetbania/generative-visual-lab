@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "dialkit": "^1.4.3",
     "next": "16.3.4",
     "react": "19.2.8",
     "react-dom": "19.2.8"
@@ -21,6 +22,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
     "tailwindcss": "^4",
+    "topojson-client": "^3.1.0",
     "typescript": "^5"
   }
 }
