@@ -65,6 +65,28 @@ function drawGlassPill(c: CanvasRenderingContext2D, x: number, y: number, w: num
   c.restore();
 }
 
+interface PillRect { x: number; y: number; w: number; h: number }
+
+/**
+ * Lays out an anchor's floating glass-pill label (position + size), shared by
+ * `render` (to draw it) and `handleClick` (to hit-test it) so the two never
+ * drift apart — the pill floats away from the anchor's own dot, so without
+ * this the visually-obvious click target and the actual one would diverge.
+ */
+function anchorPillRect(c: CanvasRenderingContext2D, anchor: GeoAnchor, proj: { x: number; y: number }, r: number, px: number, labelsVisible: boolean): PillRect | null {
+  if (!labelsVisible || !anchor.label) return null;
+  const labelText = anchor.label.toUpperCase();
+  const subText = anchor.sublabel;
+  c.font = `600 ${10 * px}px Inter, "Helvetica Neue", sans-serif`;
+  const textW = c.measureText(labelText).width;
+  let subW = 0;
+  if (subText) { c.font = `500 ${8.5 * px}px "IBM Plex Mono", monospace`; subW = c.measureText(subText).width; }
+  const padX = 10 * px, padY = subText ? 6 * px : 5 * px, lineH = 11 * px, rowGap = 3 * px;
+  const w = Math.max(textW, subW) + padX * 2;
+  const h = (subText ? lineH * 2 + rowGap : lineH) + padY * 2;
+  return { x: proj.x + r * 1.8, y: proj.y - r * 1.8 - h, w, h };
+}
+
 export const particleGlobeParams: ParamField[] = [
   { key: "projection", label: "Projection", section: "Geography", type: "select", options: ["flat", "globe", "perspective"], default: "globe" },
   { key: "rotationY", label: "Rotation Y (Spin)", section: "Geography", type: "slider", min: -180, max: 180, step: 1, default: -20 },
@@ -416,35 +438,26 @@ export const particleGlobeEffect: EffectDefinition<ParticleGlobeParams, GlobeSta
       }
       c.restore();
 
-      if (!params.labelsVisible || !anchor.label) continue;
+      const pill = anchorPillRect(c, anchor, proj, r, px, params.labelsVisible);
+      if (!pill) continue;
 
-      const labelText = anchor.label.toUpperCase();
       const subText = anchor.sublabel;
       const labelFont = `600 ${10 * px}px Inter, "Helvetica Neue", sans-serif`;
       const subFont = `500 ${8.5 * px}px "IBM Plex Mono", monospace`;
-      c.font = labelFont;
-      const textW = c.measureText(labelText).width;
-      let subW = 0;
-      if (subText) { c.font = subFont; subW = c.measureText(subText).width; }
-
       const padX = 10 * px, padY = subText ? 6 * px : 5 * px, lineH = 11 * px, rowGap = 3 * px;
-      const pillW = Math.max(textW, subW) + padX * 2;
-      const pillH = (subText ? lineH * 2 + rowGap : lineH) + padY * 2;
-      const px0 = proj.x + r * 1.8;
-      const py0 = proj.y - r * 1.8 - pillH;
 
-      drawGlassPill(c, px0, py0, pillW, pillH, anchorColor, px);
+      drawGlassPill(c, pill.x, pill.y, pill.w, pill.h, anchorColor, px);
 
       c.save();
       c.textBaseline = "top";
       c.textAlign = "left";
       c.font = labelFont;
       c.fillStyle = oklchToCss(ensureContrast(anchorColor, ctx.palette.background, 0.55));
-      c.fillText(labelText, px0 + padX, py0 + padY);
+      c.fillText(anchor.label.toUpperCase(), pill.x + padX, pill.y + padY);
       if (subText) {
         c.font = subFont;
         c.fillStyle = oklchToCss(ensureContrast(mixOklch(anchorColor, ctx.palette.ambient, 0.4), ctx.palette.background, 0.4));
-        c.fillText(subText, px0 + padX, py0 + padY + lineH + rowGap);
+        c.fillText(subText, pill.x + padX, pill.y + padY + lineH + rowGap);
       }
       c.restore();
     }
@@ -452,12 +465,21 @@ export const particleGlobeEffect: EffectDefinition<ParticleGlobeParams, GlobeSta
 
   handleClick(params, xDevice, yDevice, ctx, state): GeoClickResult | void {
     const pp = { mode: params.projection, rotationX: state.effRotX, rotationY: state.effRotY, rotationZ: state.effRotZ, zoom: state.effZoom, width: ctx.width, height: ctx.height };
+    const depthScale = ctx.depth === "off" ? 1 : ctx.depth === "subtle" ? 1.1 : 1.25;
+    const r = params.anchorSize * 2 * depthScale;
     const anchors: GeoAnchor[] = ctx.geo?.anchors ?? [];
     for (const a of anchors) {
       const proj = project(a.lon, a.lat, pp);
       if (!proj.visible) continue;
+      // Both this ring's own dot AND its floating glass-pill label (which,
+      // being the visually prominent element, is the target most people
+      // actually click) select the anchor — they must stay clickable in sync.
       const dist = Math.hypot(proj.x - xDevice, proj.y - yDevice);
-      if (dist <= HIT_RADIUS_PX * ctx.dpr) return { kind: "select", anchorId: a.id };
+      if (dist <= HIT_RADIUS_PX) return { kind: "select", anchorId: a.id };
+      const pill = anchorPillRect(ctx.ctx, a, proj, r, 1, params.labelsVisible);
+      if (pill && xDevice >= pill.x && xDevice <= pill.x + pill.w && yDevice >= pill.y && yDevice <= pill.y + pill.h) {
+        return { kind: "select", anchorId: a.id };
+      }
     }
     const geo = unproject(xDevice, yDevice, pp);
     if (!geo) return;
