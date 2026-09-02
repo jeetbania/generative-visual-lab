@@ -5,6 +5,7 @@ import { GeoRoute } from "@/lib/store/project";
 
 const ROUTE_CURVES: GeoRoute["curveType"][] = ["straight", "arc", "great-circle"];
 const ROUTE_STYLES: GeoRoute["style"][] = ["solid", "dotted", "particle", "arrow"];
+const LINE_ANIMATIONS: GeoRoute["lineAnimation"][] = ["none", "flow", "draw", "march"];
 
 export default function GeoPanel() {
   const { state, dispatch } = useStudio();
@@ -50,6 +51,14 @@ export default function GeoPanel() {
                   onChange={(e) => dispatch({ type: "GEO_UPDATE_ROUTE", id: r.id, patch: { style: e.target.value as GeoRoute["style"] } })}
                 >
                   {ROUTE_STYLES.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+                <select
+                  className="geo-select"
+                  value={r.lineAnimation ?? "none"}
+                  title="Line animation"
+                  onChange={(e) => dispatch({ type: "GEO_UPDATE_ROUTE", id: r.id, patch: { lineAnimation: e.target.value as GeoRoute["lineAnimation"] } })}
+                >
+                  {LINE_ANIMATIONS.map((a) => <option key={a} value={a}>{a}</option>)}
                 </select>
                 <button className="geo-icon-btn" onClick={() => dispatch({ type: "GEO_REMOVE_ROUTE", id: r.id })} title="Remove route">×</button>
               </div>

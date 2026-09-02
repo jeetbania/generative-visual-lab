@@ -254,32 +254,96 @@ export const particleGlobeEffect: EffectDefinition<ParticleGlobeParams, GlobeSta
       }
       if (pathPts.length < 2) continue;
 
+      const maxIdx = pathPts.length - 1;
+      /** Samples a point along the path by fractional index (0..maxIdx) — the
+       *  one interpolation routine every traveling decoration (particle dot,
+       *  arrowhead, flow pulse) and the "draw" line animation share. */
+      const pointAt = (i: number) => {
+        const c0 = Math.max(0, Math.min(maxIdx, i));
+        const i0 = Math.floor(c0), i1 = Math.min(maxIdx, i0 + 1);
+        const lt = c0 - i0;
+        const a = pathPts[i0], b = pathPts[i1];
+        return { x: a.x + (b.x - a.x) * lt, y: a.y + (b.y - a.y) * lt };
+      };
+      const strokePts = (pts: { x: number; y: number; visible: boolean }[]) => {
+        c.beginPath();
+        let started = false;
+        for (const pt of pts) {
+          if (!pt.visible) { started = false; continue; }
+          if (!started) { c.moveTo(pt.x, pt.y); started = true; } else c.lineTo(pt.x, pt.y);
+        }
+        c.stroke();
+      };
+
       const routeColor = ensureContrast(mixOklch(ctx.palette.accent, ctx.palette.focal, 0.4), ctx.palette.background, 0.3);
+      const lineAnim = route.lineAnimation ?? "none";
+
       c.save();
       if (route.glow > 0.01) { c.shadowColor = oklchToCss(routeColor); c.shadowBlur = route.glow * 10; }
       c.strokeStyle = oklchToCss(routeColor);
-      c.globalAlpha = route.opacity;
       c.lineWidth = route.thickness * depthScale * px;
       c.lineCap = "round";
       if (route.style === "dotted") c.setLineDash([route.thickness * 2.5 * px, route.thickness * 3.5 * px]);
-      c.beginPath();
-      let started = false;
-      for (const pt of pathPts) {
-        if (!pt.visible) { started = false; continue; }
-        if (!started) { c.moveTo(pt.x, pt.y); started = true; } else c.lineTo(pt.x, pt.y);
+
+      if (lineAnim === "march") {
+        // marching dashes: a flowing dash pattern, offset animates with time
+        // so the line itself reads as current running through a wire.
+        const dash: [number, number] = route.style === "dotted"
+          ? [route.thickness * 2.5 * px, route.thickness * 3.5 * px]
+          : [route.thickness * 3 * px, route.thickness * 2.5 * px];
+        c.setLineDash(dash);
+        c.lineDashOffset = -((ctx.time * route.speed * route.direction * 26) % (dash[0] + dash[1]));
       }
-      c.stroke();
+
+      if (lineAnim === "draw") {
+        // a pulse of ink races from start to end and fades behind itself,
+        // looping continuously — a construction-line animation rather than a
+        // permanently-visible connection.
+        const period = 2.2 / Math.max(0.05, route.speed);
+        const t = (((ctx.time * route.direction) % period) + period) % period / period;
+        const headFrac = Math.min(1, t * 1.4);
+        const tailFrac = Math.max(0, headFrac - 0.32);
+        c.globalAlpha = route.opacity;
+        strokePts(pathPts.slice(Math.floor(tailFrac * maxIdx), Math.ceil(headFrac * maxIdx) + 1));
+      } else if (lineAnim === "flow") {
+        // the connection stays visible as a dim track, with a bright pulse
+        // of light continuously traveling its length — the "energy flowing
+        // through a wire" read from the Stripe reference.
+        c.globalAlpha = route.opacity * 0.38;
+        strokePts(pathPts);
+
+        const windowFrac = 0.14;
+        const period = 1.8 / Math.max(0.05, route.speed);
+        const loopT = (((ctx.time * route.direction) % period) + period) % period / period;
+        const center = loopT * (1 + windowFrac * 2) - windowFrac;
+        const startFrac = Math.max(0, center - windowFrac), endFrac = Math.min(1, center + windowFrac);
+        if (endFrac > startFrac) {
+          const si = Math.floor(startFrac * maxIdx), ei = Math.min(maxIdx, Math.ceil(endFrac * maxIdx));
+          const segPts = pathPts.slice(si, ei + 1);
+          if (segPts.length >= 2) {
+            const a0 = segPts[0], a1 = segPts[segPts.length - 1];
+            const grad = c.createLinearGradient(a0.x, a0.y, a1.x, a1.y);
+            grad.addColorStop(0, oklchToCss(oklchWithAlpha(routeColor, 0)));
+            grad.addColorStop(0.5, oklchToCss(oklchWithAlpha(routeColor, Math.min(1, route.opacity * 1.4))));
+            grad.addColorStop(1, oklchToCss(oklchWithAlpha(routeColor, 0)));
+            c.globalAlpha = 1;
+            c.strokeStyle = grad;
+            c.lineWidth = route.thickness * depthScale * px * 1.5;
+            strokePts(segPts);
+          }
+        }
+      } else {
+        // "none" (static) and "march" (dash offset already applied above)
+        c.globalAlpha = route.opacity;
+        strokePts(pathPts);
+      }
       c.restore();
 
       if (route.style === "particle") {
         const n = Math.max(1, Math.round(route.particleCount));
         for (let i = 0; i < n; i++) {
           const t = (((ctx.time * route.speed * route.direction) / 3 + i / n) % 1 + 1) % 1;
-          const idx = t * (pathPts.length - 1);
-          const i0 = Math.floor(idx), i1 = Math.min(pathPts.length - 1, i0 + 1);
-          const localT = idx - i0;
-          const a = pathPts[i0], b = pathPts[i1];
-          const x = a.x + (b.x - a.x) * localT, y = a.y + (b.y - a.y) * localT;
+          const { x, y } = pointAt(t * maxIdx);
           drawParticle(c, { x, y, size: route.thickness * 3 * depthScale * px, opacity: route.opacity, color: oklchToCss(ctx.palette.glow) }, { shape: "circle" });
         }
       }
@@ -287,19 +351,11 @@ export const particleGlobeEffect: EffectDefinition<ParticleGlobeParams, GlobeSta
       // Animated arrow: a single arrowhead travels the path, oriented to its
       // own direction of travel, with a short fading comet-tail behind it.
       if (route.style === "arrow") {
-        const maxIdx = pathPts.length - 1;
         const stepDir = route.direction >= 0 ? 1 : -1;
         const t = (((ctx.time * route.speed * route.direction) / 3) % 1 + 1) % 1;
         const idx = t * maxIdx;
-        const at = (i: number) => {
-          const c0 = Math.max(0, Math.min(maxIdx, i));
-          const i0 = Math.floor(c0), i1 = Math.min(maxIdx, i0 + 1);
-          const lt = c0 - i0;
-          const a = pathPts[i0], b = pathPts[i1];
-          return { x: a.x + (b.x - a.x) * lt, y: a.y + (b.y - a.y) * lt };
-        };
-        const head = at(idx);
-        const ahead = at(idx + stepDir * 1.2);
+        const head = pointAt(idx);
+        const ahead = pointAt(idx + stepDir * 1.2);
         const angle = Math.atan2(ahead.y - head.y, ahead.x - head.x);
         const arrowColor = ensureContrast(mixOklch(ctx.palette.glow, ctx.palette.focal, 0.3), ctx.palette.background, 0.35);
         const size = route.thickness * 4.5 * depthScale * px;
@@ -308,7 +364,7 @@ export const particleGlobeEffect: EffectDefinition<ParticleGlobeParams, GlobeSta
         c.save();
         const tailSteps = 8;
         for (let s = tailSteps; s >= 1; s--) {
-          const tp = at(idx - stepDir * s * 0.7);
+          const tp = pointAt(idx - stepDir * s * 0.7);
           c.globalAlpha = route.opacity * (1 - s / tailSteps) * 0.55;
           c.fillStyle = oklchToCss(ctx.palette.glow);
           c.beginPath();

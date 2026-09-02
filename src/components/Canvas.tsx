@@ -80,7 +80,7 @@ export default function Canvas({ presentation }: { presentation: boolean }) {
       else if (result?.kind === "select") {
         dispatch({
           type: "GEO_SELECT_ANCHOR", anchorId: result.anchorId,
-          defaultRoute: { curveType: "arc", style: "arrow", thickness: 1.2, opacity: 0.85, speed: 1, curvature: 0.35, particleCount: 4, direction: 1, glow: 0.4 },
+          defaultRoute: { curveType: "arc", style: "arrow", lineAnimation: "flow", thickness: 1.2, opacity: 0.85, speed: 1, curvature: 0.35, particleCount: 4, direction: 1, glow: 0.4 },
         });
       }
     };

@@ -29,6 +29,10 @@ export interface GeoRoute {
   toId: string;
   curveType: "straight" | "arc" | "great-circle";
   style: "solid" | "dotted" | "particle" | "arrow";
+  /** How the connecting line itself behaves over time — independent of
+   *  `style`'s traveling decoration (particle dots / arrowhead), which is
+   *  layered on top of whichever of these the base line does. */
+  lineAnimation: "none" | "flow" | "draw" | "march";
   thickness: number;
   opacity: number;
   speed: number;
