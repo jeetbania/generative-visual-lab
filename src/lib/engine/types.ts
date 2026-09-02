@@ -28,7 +28,7 @@ export interface GeoRoute {
   fromId: string;
   toId: string;
   curveType: "straight" | "arc" | "great-circle";
-  style: "solid" | "dotted" | "particle";
+  style: "solid" | "dotted" | "particle" | "arrow";
   thickness: number;
   opacity: number;
   speed: number;

@@ -4,7 +4,7 @@ import { useStudio } from "@/lib/store/StudioProvider";
 import { GeoRoute } from "@/lib/store/project";
 
 const ROUTE_CURVES: GeoRoute["curveType"][] = ["straight", "arc", "great-circle"];
-const ROUTE_STYLES: GeoRoute["style"][] = ["solid", "dotted", "particle"];
+const ROUTE_STYLES: GeoRoute["style"][] = ["solid", "dotted", "particle", "arrow"];
 
 export default function GeoPanel() {
   const { state, dispatch } = useStudio();

@@ -8,8 +8,62 @@
 import { EffectDefinition, GeoAnchor, GeoClickResult, ParamField, fieldDefaults } from "../engine/types";
 import { LandPoint, ProjectionMode, greatCirclePoint, project, sampleLandPoints, unproject } from "../engine/geo";
 import { BORDER_RINGS } from "../data/geo";
-import { ensureContrast, mixOklch, oklchToCss, paletteSweep } from "../engine/color";
+import { Oklch, ensureContrast, hexToOklch, mixOklch, oklchToCss, oklchToHex, oklchWithAlpha, paletteSweep } from "../engine/color";
 import { drawParticle, ParticleShape } from "../engine/particle";
+
+// Default gradient stops for "gradient" color mode — a cool-to-warm sweep in
+// the same spirit as Stripe's multi-hue longitude gradient. The mid stop is
+// pre-computed as the OKLCH midpoint of from/to so an untouched gradient
+// reads as one smooth two-color blend, not three visibly distinct bands.
+const GRADIENT_FROM_DEFAULT = "#3A6FF7";
+const GRADIENT_TO_DEFAULT = "#F76E3A";
+const GRADIENT_MID_DEFAULT = oklchToHex(mixOklch(hexToOklch(GRADIENT_FROM_DEFAULT), hexToOklch(GRADIENT_TO_DEFAULT), 0.5));
+
+/** Two-segment lerp through three OKLCH stops — the generative-but-editable
+ *  counterpart to `paletteSweep`, driven by user-picked hex colors instead of
+ *  the atmosphere palette. */
+function gradientSweep(from: Oklch, mid: Oklch, to: Oklch, t: number): Oklch {
+  const c = Math.max(0, Math.min(1, t));
+  return c < 0.5 ? mixOklch(from, mid, c * 2) : mixOklch(mid, to, (c - 0.5) * 2);
+}
+
+/**
+ * Frosted "glass pill" capsule — a translucent rounded rect tinted with the
+ * marker's own color, plus a soft top-edge highlight and drop shadow. Canvas
+ * 2D has no real backdrop-blur, so the glass read comes from layering a
+ * translucent tinted fill, a bright highlight gradient, and a crisp thin
+ * border, rather than from actually blurring what's behind it.
+ */
+function drawGlassPill(c: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, tint: Oklch, px: number) {
+  const r = h / 2;
+  c.save();
+  c.shadowColor = "rgba(0,0,0,0.32)";
+  c.shadowBlur = 9 * px;
+  c.shadowOffsetY = 1.5 * px;
+  c.beginPath();
+  c.roundRect(x, y, w, h, r);
+  c.fillStyle = oklchToCss(oklchWithAlpha(tint, 0.16));
+  c.fill();
+  c.shadowColor = "transparent";
+  c.shadowBlur = 0;
+  c.shadowOffsetY = 0;
+
+  const highlight = c.createLinearGradient(x, y, x, y + h);
+  highlight.addColorStop(0, "rgba(255,255,255,0.32)");
+  highlight.addColorStop(0.55, "rgba(255,255,255,0.05)");
+  highlight.addColorStop(1, "rgba(255,255,255,0)");
+  c.beginPath();
+  c.roundRect(x, y, w, h, r);
+  c.fillStyle = highlight;
+  c.fill();
+
+  c.beginPath();
+  c.roundRect(x + 0.5 * px, y + 0.5 * px, w - px, h - px, Math.max(0, r - 0.5 * px));
+  c.strokeStyle = oklchToCss(oklchWithAlpha(tint, 0.5));
+  c.lineWidth = px;
+  c.stroke();
+  c.restore();
+}
 
 export const particleGlobeParams: ParamField[] = [
   { key: "projection", label: "Projection", section: "Geography", type: "select", options: ["flat", "globe", "perspective"], default: "globe" },
@@ -31,8 +85,12 @@ export const particleGlobeParams: ParamField[] = [
   { key: "opacityRandomness", label: "Opacity Randomness", section: "Particles", type: "slider", min: 0, max: 1, step: 0.01, default: 0.3 },
   { key: "jitter", label: "Jitter", section: "Particles", type: "slider", min: 0, max: 2, step: 0.05, default: 0.3 },
 
-  { key: "colorMode", label: "Color Mode", section: "Color", type: "select", options: ["single", "longitude", "latitude", "screen", "animated"], default: "screen" },
+  { key: "colorMode", label: "Color Mode", section: "Color", type: "select", options: ["single", "longitude", "latitude", "screen", "animated", "gradient"], default: "screen" },
   { key: "colorSpeed", label: "Animation Speed", section: "Color", type: "slider", min: 0, max: 1, step: 0.01, default: 0.15 },
+  { key: "gradientAxis", label: "Gradient Axis", section: "Color", type: "select", options: ["longitude", "latitude", "screen-x", "screen-y", "diagonal", "radial"], default: "longitude" },
+  { key: "gradientFrom", label: "Gradient Start", section: "Color", type: "color", default: GRADIENT_FROM_DEFAULT },
+  { key: "gradientMid", label: "Gradient Mid", section: "Color", type: "color", default: GRADIENT_MID_DEFAULT },
+  { key: "gradientTo", label: "Gradient End", section: "Color", type: "color", default: GRADIENT_TO_DEFAULT },
 
   { key: "anchorSize", label: "Anchor Size", section: "Anchors", type: "slider", min: 0.5, max: 3, step: 0.05, default: 1.4 },
   { key: "labelsVisible", label: "Labels Visible", section: "Anchors", type: "toggle", default: true },
@@ -45,6 +103,7 @@ export interface ParticleGlobeParams {
   shape: string; char: string; size: number; sizeRandomness: number;
   opacity: number; opacityRandomness: number; jitter: number;
   colorMode: string; colorSpeed: number;
+  gradientAxis: string; gradientFrom: string; gradientMid: string; gradientTo: string;
   anchorSize: number; labelsVisible: boolean;
 }
 
@@ -97,6 +156,11 @@ export const particleGlobeEffect: EffectDefinition<ParticleGlobeParams, GlobeSta
     // sizes below are plain CSS-pixel values — no manual dpr math needed.
     const px = 1;
 
+    const useGradient = params.colorMode === "gradient";
+    const gFrom = useGradient ? hexToOklch(params.gradientFrom) : null;
+    const gMid = useGradient ? hexToOklch(params.gradientMid) : null;
+    const gTo = useGradient ? hexToOklch(params.gradientTo) : null;
+
     const colorFor = (lon: number, lat: number, screenX: number, screenY: number): string => {
       let t: number;
       if (params.colorMode === "longitude") t = (lon + 180) / 360;
@@ -105,6 +169,16 @@ export const particleGlobeEffect: EffectDefinition<ParticleGlobeParams, GlobeSta
       else if (params.colorMode === "animated") {
         const angle = ctx.time * params.colorSpeed;
         t = (Math.sin(angle + (screenX / w) * Math.PI * 2) + 1) / 2;
+      } else if (useGradient && gFrom && gMid && gTo) {
+        switch (params.gradientAxis) {
+          case "latitude": t = (90 - lat) / 180; break;
+          case "screen-x": t = screenX / w; break;
+          case "screen-y": t = screenY / h; break;
+          case "diagonal": t = (screenX / w + screenY / h) / 2; break;
+          case "radial": { const dx = screenX / w - 0.5, dy = screenY / h - 0.5; t = Math.min(1, Math.hypot(dx, dy) / 0.7); break; }
+          default: t = (lon + 180) / 360; // "longitude"
+        }
+        return oklchToCss(ensureContrast(gradientSweep(gFrom, gMid, gTo, t), ctx.palette.background, 0.3));
       } else t = 0.5;
       return oklchToCss(ensureContrast(paletteSweep(ctx.palette, t), ctx.palette.background, 0.3));
     };
@@ -209,45 +283,114 @@ export const particleGlobeEffect: EffectDefinition<ParticleGlobeParams, GlobeSta
           drawParticle(c, { x, y, size: route.thickness * 3 * depthScale * px, opacity: route.opacity, color: oklchToCss(ctx.palette.glow) }, { shape: "circle" });
         }
       }
+
+      // Animated arrow: a single arrowhead travels the path, oriented to its
+      // own direction of travel, with a short fading comet-tail behind it.
+      if (route.style === "arrow") {
+        const maxIdx = pathPts.length - 1;
+        const stepDir = route.direction >= 0 ? 1 : -1;
+        const t = (((ctx.time * route.speed * route.direction) / 3) % 1 + 1) % 1;
+        const idx = t * maxIdx;
+        const at = (i: number) => {
+          const c0 = Math.max(0, Math.min(maxIdx, i));
+          const i0 = Math.floor(c0), i1 = Math.min(maxIdx, i0 + 1);
+          const lt = c0 - i0;
+          const a = pathPts[i0], b = pathPts[i1];
+          return { x: a.x + (b.x - a.x) * lt, y: a.y + (b.y - a.y) * lt };
+        };
+        const head = at(idx);
+        const ahead = at(idx + stepDir * 1.2);
+        const angle = Math.atan2(ahead.y - head.y, ahead.x - head.x);
+        const arrowColor = ensureContrast(mixOklch(ctx.palette.glow, ctx.palette.focal, 0.3), ctx.palette.background, 0.35);
+        const size = route.thickness * 4.5 * depthScale * px;
+
+        // comet tail
+        c.save();
+        const tailSteps = 8;
+        for (let s = tailSteps; s >= 1; s--) {
+          const tp = at(idx - stepDir * s * 0.7);
+          c.globalAlpha = route.opacity * (1 - s / tailSteps) * 0.55;
+          c.fillStyle = oklchToCss(ctx.palette.glow);
+          c.beginPath();
+          c.arc(tp.x, tp.y, size * 0.22 * (1 - (s / tailSteps) * 0.5), 0, Math.PI * 2);
+          c.fill();
+        }
+        c.restore();
+
+        // arrowhead
+        c.save();
+        c.translate(head.x, head.y);
+        c.rotate(angle);
+        if (route.glow > 0.01) { c.shadowColor = oklchToCss(arrowColor); c.shadowBlur = route.glow * 12; }
+        c.fillStyle = oklchToCss(arrowColor);
+        c.globalAlpha = route.opacity;
+        c.beginPath();
+        c.moveTo(size, 0);
+        c.lineTo(-size * 0.6, size * 0.55);
+        c.lineTo(-size * 0.6, -size * 0.55);
+        c.closePath();
+        c.fill();
+        c.restore();
+      }
     }
 
-    // anchors + labels
+    // anchors + labels — a small glowing point marks the exact geographic
+    // location; a frosted "glass pill" callout floats above-right of it
+    // carrying the label, the same liquid-glass language as the rest of the
+    // studio's surfaces rather than a flat text tag.
     for (const anchor of geo.anchors) {
       if (!anchor.visible) continue;
       const proj = project(anchor.lon, anchor.lat, pp);
       if (!proj.visible) continue;
       const pending = geo.pendingAnchorId === anchor.id;
-      const anchorColor = ensureContrast(ctx.palette.accent, ctx.palette.background, 0.4);
-      const r = params.anchorSize * 2.4 * depthScale * px;
+      const anchorColor = ensureContrast(mixOklch(ctx.palette.accent, ctx.palette.glow, 0.3), ctx.palette.background, 0.42);
+      const r = params.anchorSize * 2 * depthScale * px;
 
       c.save();
-      c.fillStyle = oklchToCss(ctx.palette.background);
-      c.strokeStyle = oklchToCss(anchorColor);
-      c.lineWidth = 1.4 * px;
-      c.beginPath(); c.arc(proj.x, proj.y, r, 0, Math.PI * 2); c.fill(); c.stroke();
+      c.fillStyle = oklchToCss(oklchWithAlpha(anchorColor, 0.22));
+      c.beginPath(); c.arc(proj.x, proj.y, r * 1.8, 0, Math.PI * 2); c.fill();
+      c.strokeStyle = oklchToCss(oklchWithAlpha(anchorColor, 0.55));
+      c.lineWidth = px;
+      c.beginPath(); c.arc(proj.x, proj.y, r, 0, Math.PI * 2); c.stroke();
       c.fillStyle = oklchToCss(anchorColor);
-      c.beginPath(); c.arc(proj.x, proj.y, r * 0.4, 0, Math.PI * 2); c.fill();
+      c.beginPath(); c.arc(proj.x, proj.y, r * 0.55, 0, Math.PI * 2); c.fill();
       if (pending) {
-        c.globalAlpha = 0.5 + 0.5 * Math.sin(ctx.time * 6);
-        c.beginPath(); c.arc(proj.x, proj.y, r * 1.9, 0, Math.PI * 2); c.stroke();
+        c.globalAlpha = 0.4 + 0.4 * Math.sin(ctx.time * 6);
+        c.beginPath(); c.arc(proj.x, proj.y, r * 2.6, 0, Math.PI * 2); c.stroke();
       }
       c.restore();
 
-      if (params.labelsVisible && anchor.label) {
-        c.save();
-        c.font = `500 ${11 * px}px Inter, "Helvetica Neue", sans-serif`;
-        c.textBaseline = "alphabetic";
-        c.textAlign = "left";
-        const lx = proj.x + r + 8 * px, ly = proj.y - r * 0.2;
-        c.fillStyle = oklchToCss(ensureContrast(ctx.palette.accent, ctx.palette.background, 0.5));
-        c.fillText(anchor.label.toUpperCase(), lx, ly);
-        if (anchor.sublabel) {
-          c.font = `400 ${10 * px}px "IBM Plex Mono", monospace`;
-          c.fillStyle = oklchToCss(ensureContrast(ctx.palette.ambient, ctx.palette.background, 0.35));
-          c.fillText(anchor.sublabel, lx, ly + 13 * px);
-        }
-        c.restore();
+      if (!params.labelsVisible || !anchor.label) continue;
+
+      const labelText = anchor.label.toUpperCase();
+      const subText = anchor.sublabel;
+      const labelFont = `600 ${10 * px}px Inter, "Helvetica Neue", sans-serif`;
+      const subFont = `500 ${8.5 * px}px "IBM Plex Mono", monospace`;
+      c.font = labelFont;
+      const textW = c.measureText(labelText).width;
+      let subW = 0;
+      if (subText) { c.font = subFont; subW = c.measureText(subText).width; }
+
+      const padX = 10 * px, padY = subText ? 6 * px : 5 * px, lineH = 11 * px, rowGap = 3 * px;
+      const pillW = Math.max(textW, subW) + padX * 2;
+      const pillH = (subText ? lineH * 2 + rowGap : lineH) + padY * 2;
+      const px0 = proj.x + r * 1.8;
+      const py0 = proj.y - r * 1.8 - pillH;
+
+      drawGlassPill(c, px0, py0, pillW, pillH, anchorColor, px);
+
+      c.save();
+      c.textBaseline = "top";
+      c.textAlign = "left";
+      c.font = labelFont;
+      c.fillStyle = oklchToCss(ensureContrast(anchorColor, ctx.palette.background, 0.55));
+      c.fillText(labelText, px0 + padX, py0 + padY);
+      if (subText) {
+        c.font = subFont;
+        c.fillStyle = oklchToCss(ensureContrast(mixOklch(anchorColor, ctx.palette.ambient, 0.4), ctx.palette.background, 0.4));
+        c.fillText(subText, px0 + padX, py0 + padY + lineH + rowGap);
       }
+      c.restore();
     }
   },
 
