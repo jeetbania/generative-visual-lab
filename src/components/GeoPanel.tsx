@@ -61,6 +61,19 @@ export default function GeoPanel() {
                   {LINE_ANIMATIONS.map((a) => <option key={a} value={a}>{a}</option>)}
                 </select>
                 <button className="geo-icon-btn" onClick={() => dispatch({ type: "GEO_REMOVE_ROUTE", id: r.id })} title="Remove route">×</button>
+                {r.curveType === "arc" && (
+                  <label className="geo-slider-row" title="How high the arc bows away from the globe">
+                    <span className="geo-slider-label">Height</span>
+                    <input
+                      type="range"
+                      className="geo-range"
+                      min={0} max={2.5} step={0.05}
+                      value={r.curvature}
+                      onChange={(e) => dispatch({ type: "GEO_UPDATE_ROUTE", id: r.id, patch: { curvature: Number(e.target.value) } })}
+                    />
+                    <span className="geo-slider-value">{r.curvature.toFixed(2)}</span>
+                  </label>
+                )}
               </div>
             );
           })}

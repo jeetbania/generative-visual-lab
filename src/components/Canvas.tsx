@@ -44,55 +44,96 @@ export default function Canvas({ presentation }: { presentation: boolean }) {
     const canvas = canvasRef.current;
     if (canvas) interaction.attach(canvas);
 
-    // Click detection (down+up within a small movement/time budget) — kept
-    // separate from the continuous move tracking above. Effects that opt in
-    // via `handleClick` (currently Particle Globe's anchor placement) get a
-    // device-space coordinate; everything else simply ignores clicks.
-    let downX = 0, downY = 0, downT = 0, down = false;
-    const onDown = (e: PointerEvent) => { downX = e.clientX; downY = e.clientY; downT = performance.now(); down = true; };
-    const onUp = (e: PointerEvent) => {
-      if (!down) return;
-      down = false;
-      const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
-      const elapsed = performance.now() - downT;
-      if (moved > 6 || elapsed > 500) return;
+    // Click + drag detection, sharing one down/up lifecycle: a short, mostly-
+    // stationary press is a click (`handleClick` — placing/connecting map
+    // anchors); anything that moves past the threshold before release is a
+    // drag (`handleDrag` — orbiting the globe with the mouse). Both are
+    // opt-in per effect so every other generator's interaction is untouched.
+    const DRAG_THRESHOLD = 6;
+    let downX = 0, downY = 0, downT = 0, down = false, dragging = false, lastX = 0, lastY = 0;
+
+    const buildCtx = (rect: DOMRect): EffectContext | null => {
       const s = stateRef.current;
-      const effect = findEffect(s.effectId);
-      if (!effect.handleClick || !canvasRef.current) return;
       const rt = runtimeRef.current;
       const palette = paletteRef.current;
-      if (!rt || !palette) return;
-      const rect = canvasRef.current.getBoundingClientRect();
-      const { dpr } = sizeRef.current;
-      // Effect-space is CSS pixels (see the `setTransform` in the render
-      // loop below) — no dpr multiplication here, just canvas-relative coords.
-      const clickX = e.clientX - rect.left;
-      const clickY = e.clientY - rect.top;
-      const clickCtx: EffectContext = {
-        ctx: canvasRef.current.getContext("2d")!, width: rect.width, height: rect.height, dpr,
+      if (!rt || !palette || !canvasRef.current) return null;
+      return {
+        ctx: canvasRef.current.getContext("2d")!, width: rect.width, height: rect.height, dpr: sizeRef.current.dpr,
         time: simTimeRef.current, dt: 0,
         mouse: interaction.state, interactionEnabled: s.interactionEnabled,
         rng: rt.rng, noise: rt.noise, palette, depth: s.depth, quality: s.quality,
         geo: { anchors: s.geoAnchors, routes: s.geoRoutes, pendingAnchorId: s.geoPendingAnchorId },
       };
+    };
+
+    const onDown = (e: PointerEvent) => {
+      downX = e.clientX; downY = e.clientY; downT = performance.now(); down = true; dragging = false;
+      lastX = e.clientX; lastY = e.clientY;
+    };
+    const onMove = (e: PointerEvent) => {
+      if (!down) return;
+      const s = stateRef.current;
+      const effect = findEffect(s.effectId);
+      if (!effect.handleDrag) return;
+      if (!dragging && Math.hypot(e.clientX - downX, e.clientY - downY) > DRAG_THRESHOLD) {
+        dragging = true;
+        if (canvasRef.current) canvasRef.current.style.cursor = "grabbing";
+      }
+      if (!dragging || !canvasRef.current) return;
+      const dx = e.clientX - lastX, dy = e.clientY - lastY;
+      lastX = e.clientX; lastY = e.clientY;
+      const rt = runtimeRef.current;
+      const dragCtx = buildCtx(canvasRef.current.getBoundingClientRect());
+      if (!rt || !dragCtx) return;
+      // Effect-space is CSS pixels (see the `setTransform` in the render loop
+      // below) — the raw client-coordinate delta needs no dpr scaling.
+      effect.handleDrag(s.paramsByEffect[s.effectId], dx, dy, dragCtx, rt.state);
+    };
+    const onUp = (e: PointerEvent) => {
+      if (!down) return;
+      down = false;
+      const s = stateRef.current;
+      if (canvasRef.current) canvasRef.current.style.cursor = findEffect(s.effectId).handleDrag ? "grab" : "";
+      if (dragging) { dragging = false; return; }
+      const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
+      const elapsed = performance.now() - downT;
+      if (moved > DRAG_THRESHOLD || elapsed > 500) return;
+      const effect = findEffect(s.effectId);
+      if (!effect.handleClick || !canvasRef.current) return;
+      const rect = canvasRef.current.getBoundingClientRect();
+      const clickCtx = buildCtx(rect);
+      const rt = runtimeRef.current;
+      if (!clickCtx || !rt) return;
+      // Effect-space is CSS pixels (see the `setTransform` in the render
+      // loop below) — no dpr multiplication here, just canvas-relative coords.
+      const clickX = e.clientX - rect.left;
+      const clickY = e.clientY - rect.top;
       const result = effect.handleClick(s.paramsByEffect[s.effectId], clickX, clickY, clickCtx, rt.state);
       if (result?.kind === "anchor") dispatch({ type: "GEO_ADD_ANCHOR", lon: result.lon, lat: result.lat });
       else if (result?.kind === "select") {
         dispatch({
           type: "GEO_SELECT_ANCHOR", anchorId: result.anchorId,
-          defaultRoute: { curveType: "arc", style: "arrow", lineAnimation: "flow", thickness: 1.2, opacity: 0.85, speed: 1, curvature: 0.35, particleCount: 4, direction: 1, glow: 0.4 },
+          defaultRoute: { curveType: "arc", style: "arrow", lineAnimation: "flow", thickness: 1.2, opacity: 0.85, speed: 1, curvature: 0.8, particleCount: 4, direction: 1, glow: 0.4 },
         });
       }
     };
     canvas?.addEventListener("pointerdown", onDown);
+    window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     return () => {
       interaction.detach();
       canvas?.removeEventListener("pointerdown", onDown);
+      window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Hover affordance: show a "grab" cursor whenever the active effect
+  // supports dragging, even before the first interaction.
+  useEffect(() => {
+    if (canvasRef.current) canvasRef.current.style.cursor = findEffect(state.effectId).handleDrag ? "grab" : "";
+  }, [state.effectId]);
 
   // Resize: fit composition aspect ratio inside the available zone, crisp at DPR.
   useEffect(() => {

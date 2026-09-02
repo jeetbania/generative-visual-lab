@@ -133,7 +133,14 @@ interface GlobeState {
   points: LandPoint[];
   key: string;
   effRotY: number; effRotX: number; effRotZ: number; effZoom: number;
+  /** Accumulated mouse-drag orbit, layered on top of the Rotation sliders in
+   *  `update()` rather than fed back into params — keeps a live drag from
+   *  fighting the inspector's own controlled slider state. */
+  dragRotY: number; dragRotX: number;
 }
+
+const MAX_TILT = 85;
+const DRAG_SENSITIVITY = 0.3; // degrees of rotation per CSS pixel dragged
 
 function keyOf(p: ParticleGlobeParams, seed: number) {
   return `${Math.round(p.density)}:${seed}:${p.coastEmphasis.toFixed(2)}`;
@@ -155,6 +162,7 @@ export const particleGlobeEffect: EffectDefinition<ParticleGlobeParams, GlobeSta
       points: sampleLandPoints(Math.round(params.density), ctx.rng.seed, params.coastEmphasis),
       key: keyOf(params, ctx.rng.seed),
       effRotY: params.rotationY, effRotX: params.rotationX, effRotZ: params.rotationZ, effZoom: params.zoom,
+      dragRotY: 0, dragRotX: 0,
     };
   },
 
@@ -164,10 +172,19 @@ export const particleGlobeEffect: EffectDefinition<ParticleGlobeParams, GlobeSta
       state.points = sampleLandPoints(Math.round(params.density), ctx.rng.seed, params.coastEmphasis);
       state.key = k;
     }
-    state.effRotY = params.rotationY + (params.autoRotate ? (ctx.time * params.autoRotateSpeed) % 360 : 0);
-    state.effRotX = params.rotationX;
+    state.effRotY = params.rotationY + state.dragRotY + (params.autoRotate ? (ctx.time * params.autoRotateSpeed) % 360 : 0);
+    state.effRotX = Math.max(-MAX_TILT, Math.min(MAX_TILT, params.rotationX + state.dragRotX));
     state.effRotZ = params.rotationZ;
     state.effZoom = params.zoom;
+  },
+
+  /** Click-drag orbits the globe — the tilt slider still sets the base
+   *  attitude, but the mouse can freely spin/tilt on top of it, exactly like
+   *  dragging a physical globe rather than only nudging sliders. */
+  handleDrag(params, dx, dy, ctx, state) {
+    state.dragRotY += dx * DRAG_SENSITIVITY;
+    const rawX = params.rotationX + state.dragRotX - dy * DRAG_SENSITIVITY;
+    state.dragRotX = Math.max(-MAX_TILT, Math.min(MAX_TILT, rawX)) - params.rotationX;
   },
 
   render(state, params, ctx) {
@@ -262,7 +279,17 @@ export const particleGlobeEffect: EffectDefinition<ParticleGlobeParams, GlobeSta
           const mx = (pa.x + pb.x) / 2, my = (pa.y + pb.y) / 2;
           const dx = pb.x - pa.x, dy = pb.y - pa.y;
           const dist = Math.hypot(dx, dy) || 1;
-          const nx = -dy / dist, ny = dx / dist;
+          let nx = -dy / dist, ny = dx / dist;
+          // Always bow AWAY from the globe's screen-space center — without
+          // this, whichever way the chord happens to run left/right of
+          // center flips the perpendicular's sign, so an arc could just as
+          // easily balloon inward through the sphere as arch outward over
+          // it. Flat maps have no meaningful "center" to bow away from, so
+          // this only applies to globe/perspective.
+          if (params.projection !== "flat") {
+            const ox = mx - w / 2, oy = my - h / 2;
+            if (nx * ox + ny * oy < 0) { nx = -nx; ny = -ny; }
+          }
           const bow = route.curvature * dist * 0.5;
           const cx = mx + nx * bow, cy = my + ny * bow;
           const steps = 32;

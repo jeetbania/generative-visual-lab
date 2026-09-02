@@ -112,6 +112,13 @@ export interface EffectDefinition<P extends EffectParams = EffectParams, S = unk
    *  Returns what happened so the host can dispatch it into shared state —
    *  the effect itself never touches React state directly. */
   handleClick?: (params: P, xDevice: number, yDevice: number, ctx: EffectContext, state: S) => GeoClickResult | void;
+  /** Opt-in drag interaction (currently: orbiting the globe with the mouse).
+   *  Called on every pointer-move while a drag is in progress, with the CSS-
+   *  pixel delta since the last call. The effect mutates its own `state`
+   *  directly (e.g. an accumulated drag offset layered on top of the params-
+   *  driven base rotation) rather than returning a params patch, so a live
+   *  drag never fights with the inspector's own controlled sliders. */
+  handleDrag?: (params: P, dxCss: number, dyCss: number, ctx: EffectContext, state: S) => void;
 }
 
 export type GeoClickResult = { kind: "anchor"; lon: number; lat: number } | { kind: "select"; anchorId: string };
